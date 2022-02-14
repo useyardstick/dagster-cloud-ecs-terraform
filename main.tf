@@ -35,43 +35,32 @@ resource "aws_vpc" "agent_vpc" {
 }
 
 resource "aws_internet_gateway" "internet_gateway" {
-  depends_on = [
-    aws_vpc.agent_vpc
-  ]
-}
-
-/* note difference between vpc/vpn gateway - line 67*/
-resource "aws_vpn_gateway_attachment" "attach_gateway" {
-  vpc_id         = aws_vpc.agent_vpc
-  vpn_gateway_id = aws_internet_gateway.internet_gateway
+  vpc_id = aws_vpc.agent_vpc.id
 }
 
 resource "aws_route_table" "public_route_table" {
-  vpc_id = aws_vpc.agent_vpc
+  vpc_id = aws_vpc.agent_vpc.id
   tags = {
     Name = "Public"
   }
 }
 
 resource "aws_route" "route_to_gateway" {
-  depends_on = [
-    aws_vpn_gateway_attachment.attach_gateway
-  ]
   route_table_id         = aws_route_table.public_route_table.id
   destination_cidr_block = "0.0.0.0/0"
-  gateway_id             = aws_internet_gateway.internet_gateway
+  gateway_id             = aws_internet_gateway.internet_gateway.id
 }
 
 resource "aws_subnet" "agent_subnet" {
-  vpc_id                  = aws_vpc.agent_vpc
+  vpc_id                  = aws_vpc.agent_vpc.id
   cidr_block              = "10.0.0.0/16"
-  availability_zone       = var.region
+  availability_zone       = "${var.region}a"
   map_public_ip_on_launch = true
 }
 
 resource "aws_route_table_association" "public_subnet_route_table_association" {
-  subnet_id      = aws_subnet.agent_subnet
-  route_table_id = aws_route_table.public_route_table
+  subnet_id      = aws_subnet.agent_subnet.id
+  route_table_id = aws_route_table.public_route_table.id
 }
 
 /* AgentCluster seems to appear twice in the CloudFormation
@@ -86,13 +75,14 @@ resource "aws_ecs_task_definition" "agent_task_definition" {
       name  = "DagsterAgent"
       image = "docker.io/dagster/dagster-cloud-agent"
       environment = [{
-        "DAGSTER_HOME" = "/opt/dagster/dagster_home"
+        name  = "DAGSTER_HOME"
+        value = "/opt/dagster/dagster_home"
       }]
       entryPoint  = ["bash", "-c"]
       stopTimeout = 120
       command = [<<EOS
-      /bin/bash -c "
-                mkdir -p $DAGSTER_HOME && echo 'instance_class:
+      /bin/bash -c "mkdir -p $DAGSTER_HOME && echo '
+                instance_class:
                   module: dagster_cloud
                   class: DagsterCloudAgentInstance
 
@@ -105,20 +95,20 @@ resource "aws_ecs_task_definition" "agent_task_definition" {
                   module: dagster_cloud.workspace.ecs
                   class: EcsUserCodeLauncher
                   config:
-                    cluster: ${aws_ecs_cluster.agent_cluster}
-                    subnets: [${aws_subnet.agent_subnet}]
-                    service_discovery_namespace_id: ${aws_service_discovery_private_dns_namespace.service_discovery_namespace}
+                    cluster: ${aws_ecs_cluster.agent_cluster.id}
+                    subnets: [${aws_subnet.agent_subnet.id}]
+                    service_discovery_namespace_id: ${aws_service_discovery_private_dns_namespace.service_discovery_namespace.id}
                     execution_role_arn: ${aws_iam_role.task_execution_role.arn}
                     task_role_arn: ${aws_iam_role.agent_role.arn}
                     log_group: ${aws_cloudwatch_log_group.agent_log_group.id}
                 ' > $DAGSTER_HOME/dagster.yaml && cat $DAGSTER_HOME/dagster.yaml && dagster-cloud agent run"
       EOS
-      ],
+      ]
       logConfiguration = {
         logDriver = "awslogs",
         options = {
           awslogs-group         = aws_cloudwatch_log_group.agent_log_group.id
-          awslog-region         = var.region
+          awslogs-region        = var.region
           awslogs-stream-prefix = "agent"
         }
       }
@@ -137,15 +127,13 @@ resource "aws_ecs_service" "agent_service" {
     aws_route_table_association.public_subnet_route_table_association,
     aws_route.route_to_gateway
   ]
-  cluster         = aws_ecs_cluster.agent_cluster
+  cluster         = aws_ecs_cluster.agent_cluster.id
   desired_count   = 1
   launch_type     = "FARGATE"
   task_definition = aws_ecs_task_definition.agent_task_definition.arn
-  network_configuration = {
-    aws_vpc_configuration = {
-      subnets = aws_subnet.agent_subnet.arn
-    }
-    assign_public_ip = "aws_subnet"
+  network_configuration {
+    subnets          = [aws_subnet.agent_subnet.id]
+    assign_public_ip = true
   }
 }
 
@@ -155,7 +143,7 @@ resource "aws_ecs_service" "agent_service" {
       terraform considers the properties address unsupported
  */
 resource "aws_service_discovery_private_dns_namespace" "service_discovery_namespace" {
-  vpc  = aws_vpc.agent_vpc.arn
+  vpc  = aws_vpc.agent_vpc.id
   name = "dagster-agent-${var.dagster_organization}-${var.dagster_deployment}.local"
 }
 
